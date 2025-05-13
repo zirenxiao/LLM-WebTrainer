@@ -6,7 +6,7 @@ import re
 import time
 from flask import (
     Flask, request, render_template,
-    jsonify, Response, redirect, url_for
+    jsonify, Response, redirect, url_for, flash
 )
 from werkzeug.utils import secure_filename
 from transformers import (
@@ -19,6 +19,7 @@ import torch
 from multiprocessing import Process
 
 app = Flask(__name__)
+app.secret_key = os.environ.get("SECRET_KEY", "supersecretkey")
 
 # ensure folders exist
 os.makedirs("datasets", exist_ok=True)
@@ -26,14 +27,14 @@ os.makedirs("logs", exist_ok=True)
 OUTPUT_DIR = "result"
 os.makedirs(OUTPUT_DIR, exist_ok=True)
 
-# --- Default config (OUTPUT_DIR fixed) ---
 available_devices = [f"cuda:{i}" for i in range(torch.cuda.device_count())]
 default_config = {
-    "MODEL_NAME": "Qwen/Qwen2.5-0.5B-Instruct",
-    "BATCH_SIZE": 1,
-    "EPOCHS": 10,
-    "LEARNING_RATE": 5e-5,
-    "DATA_PATH": "",  # will set to first existing dataset if any
+    "model_name": "Qwen/Qwen2.5-0.5B-Instruct",
+    "text_mapping": "messages",
+    "batch_size": 1,
+    "epochs": 10,
+    "learning_rate": 5e-5,
+    "DATA_PATH": "",  # set below based on selection
     "use_lora": True,
     "lora_r": 8,
     "lora_alpha": 16,
@@ -46,18 +47,18 @@ default_config = {
     "weight_decay": 0.01,
     "logging_dir": f"{OUTPUT_DIR}/logs",
     "logging_steps": 10,
+    "logging_strategy": "epoch",
     "save_strategy": "epoch",
     "save_total_limit": 5,
     "cuda_devices": ",".join(available_devices),
 }
 config = default_config.copy()
 
-# If there's at least one file, default DATA_PATH
+# Pre-set DATA_PATH to first dataset if exists
 datasets_list = sorted(os.listdir("datasets"))
 if datasets_list:
     config["DATA_PATH"] = os.path.join("datasets", datasets_list[0])
 
-# --- Log & status files ---
 LOG_FILE    = os.path.join("logs", "flask_logs.txt")
 STATUS_FILE = os.path.join("logs", "status.json")
 open(LOG_FILE,    "a").close()
@@ -84,7 +85,7 @@ def train_model():
         def flush(self): pass
     sys.stdout = Logger(); sys.stderr = Logger()
 
-    write_status("Training in progress...")
+    write_status("🚀 Training in progress...")
     try:
         write_log("=== Training started ===\n")
 
@@ -94,12 +95,12 @@ def train_model():
 
         write_log("Initializing tokenizer & model...\n")
         kwargs = {}
-        if "gemma" in config["MODEL_NAME"]:
+        if "gemma" in config["model_name"]:
             kwargs["attn_implementation"] = "eager"
         if len(config["cuda_devices"].split(",")) > 1:
             kwargs["device_map"] = "auto"
-        tokenizer = AutoTokenizer.from_pretrained(config["MODEL_NAME"], **kwargs)
-        model     = AutoModelForCausalLM.from_pretrained(config["MODEL_NAME"], **kwargs)
+        tokenizer = AutoTokenizer.from_pretrained(config["model_name"], **kwargs)
+        model     = AutoModelForCausalLM.from_pretrained(config["model_name"], **kwargs)
         write_log("Model ready.\n")
 
         if config["use_lora"]:
@@ -116,7 +117,7 @@ def train_model():
         write_log("Tokenizing...\n")
         def tok(ex):
             inp = tokenizer(
-                json.dumps(ex["messages"]),
+                json.dumps(ex[config["text_mapping"]]),
                 padding=config["padding_strategy"],
                 truncation=True,
                 max_length=config["padding_max_length"]
@@ -133,13 +134,14 @@ def train_model():
         args = TrainingArguments(
             output_dir=OUTPUT_DIR,
             eval_strategy=config["eval_strategy"],
-            learning_rate=config["LEARNING_RATE"],
-            per_device_train_batch_size=config["BATCH_SIZE"],
-            per_device_eval_batch_size=config["BATCH_SIZE"],
-            num_train_epochs=config["EPOCHS"],
+            learning_rate=config["learning_rate"],
+            per_device_train_batch_size=config["batch_size"],
+            per_device_eval_batch_size=config["batch_size"],
+            num_train_epochs=config["epochs"],
             weight_decay=config["weight_decay"],
             logging_dir=config["logging_dir"],
             logging_steps=config["logging_steps"],
+            logging_strategy=config["logging_strategy"],
             save_strategy=config["save_strategy"],
             save_total_limit=config["save_total_limit"],
         )
@@ -158,17 +160,16 @@ def train_model():
 
         results = trainer.evaluate()
         write_log(f"=== Training completed: {results} ===\n")
-        write_status("Completed")
+        write_status("✅ Completed")
     except Exception as e:
-        write_log(f"ERROR: {e}\n")
-        write_status("Failed")
+        write_log(f"❌ ERROR: {e}\n")
+        write_status("❌ Failed")
     finally:
         sys.stdout = original_stdout
         sys.stderr = original_stderr
 
 @app.route("/", methods=["GET"])
 def index():
-    # refresh datasets & models
     datasets = sorted(os.listdir("datasets"))
     models   = sorted(
         d for d in os.listdir(OUTPUT_DIR)
@@ -188,52 +189,71 @@ def upload_dataset():
     if file and file.filename:
         fname = secure_filename(file.filename)
         file.save(os.path.join("datasets", fname))
+        flash(f"✅ Dataset uploaded: {fname}")
+    else:
+        flash("❌ No file selected for upload.")
+    return redirect(url_for("index"))
+
+@app.route("/delete_dataset", methods=["POST"])
+def delete_dataset():
+    name = request.form.get("dataset_name")
+    path = os.path.join("datasets", name)
+    if name and os.path.exists(path):
+        os.remove(path)
+        flash(f"🗑️ Dataset deleted: {name}")
+    else:
+        flash(f"❌ Could not find dataset: {name}")
     return redirect(url_for("index"))
 
 @app.route("/train", methods=["POST"])
 def train():
-    # update config from form
+    # update config from form (except DATA_PATH text field)
     for k in config:
+        if k == "DATA_PATH":
+            continue
         if k in request.form and request.form[k]:
             v = request.form[k]
-            try:    config[k] = int(v)
-            except:
-                try:    config[k] = float(v)
-                except: config[k] = v
+            try:
+                config[k] = int(v)
+            except ValueError:
+                try:
+                    config[k] = float(v)
+                except ValueError:
+                    config[k] = v
 
-    # ensure DATA_PATH uses selected dataset
-    if "DATA_PATH" in request.form:
-        config["DATA_PATH"] = request.form["DATA_PATH"]
+    # set DATA_PATH based on dropdown
+    selected = request.form.get("dataset")
+    if selected:
+        config["DATA_PATH"] = os.path.join("datasets", selected)
 
-    # start training
     global training_process
-    if training_process and training_process.is_alive():
-        return jsonify(status="Already running"), 400
+    if 'training_process' in globals() and training_process.is_alive():
+        return jsonify(status="❌ Already running"), 400
 
     open(LOG_FILE, "w").close()
-    write_status("Queued")
+    write_status("⏳ Queued")
 
     training_process = Process(target=train_model)
     training_process.start()
-    return jsonify(status="Training started")
+    return jsonify(status="🚀 Training started")
 
 @app.route("/stop", methods=["POST"])
 def stop():
     global training_process
-    if training_process and training_process.is_alive():
+    if 'training_process' in globals() and training_process.is_alive():
         training_process.terminate()
-        write_status("Stopped")
-        return jsonify(status="Force killed"), 200
-    return jsonify(status="No active training"), 400
+        write_status("⏹️ Stopped")
+        return jsonify(status="⏹️ Force killed"), 200
+    return jsonify(status="❌ No active training"), 400
 
 @app.route("/clear_logs", methods=["POST"])
 def clear_logs():
     open(LOG_FILE, "w").close()
-    return jsonify(status="Logs cleared")
+    return jsonify(status="🧹 Logs cleared")
 
 @app.route("/status")
 def status():
-    st = "Idle"
+    st = "🤖 Idle"
     try:
         st = json.load(open(STATUS_FILE)).get("status", st)
     except:
@@ -243,11 +263,25 @@ def status():
 @app.route("/logs")
 def logs():
     def generate():
+        # ensure file exists
         open(LOG_FILE, "a").close()
-        with open(LOG_FILE) as f:
+
+        with open(LOG_FILE, "r") as f:
+            # send any existing lines
+
             for line in f:
                 yield f"data: {line.rstrip()}\n\n"
+                # now tail, but reset on truncation
+
             while True:
+                # if file was truncated, rewind
+                try:
+                    if f.tell() > os.path.getsize(LOG_FILE):
+                        f.seek(0)
+                except FileNotFoundError:
+                    # in case file was removed, recreate & rewind
+                    open(LOG_FILE, "a").close()
+                    f.seek(0)
                 line = f.readline()
                 if line:
                     yield f"data: {line.rstrip()}\n\n"

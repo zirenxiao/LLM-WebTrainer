@@ -1,9 +1,9 @@
-<!-- index.html -->
+<!-- templates/index.html -->
 <!DOCTYPE html>
 <html lang="en">
 <head>
   <meta charset="UTF-8">
-  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="viewport" content="width=device-width,initial-scale=1">
   <title>Training Dashboard</title>
   <link
     href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/css/bootstrap.min.css"
@@ -14,145 +14,113 @@
   <div class="container py-5">
     <h1 class="mb-1">Model Training Dashboard</h1>
     <p class="lead mb-4">
-      Status: <strong id="status">Idle</strong>
+      Status: <strong id="status">🤖 Idle</strong>
     </p>
+
+    {% with messages = get_flashed_messages() %}
+      {% if messages %}
+        {% for msg in messages %}
+          <div class="alert alert-info alert-dismissible fade show" role="alert">
+            {{ msg }}
+            <button type="button" class="btn-close" data-bs-dismiss="alert"></button>
+          </div>
+        {% endfor %}
+      {% endif %}
+    {% endwith %}
+
     <div class="mb-4">
-      <button class="btn btn-primary me-2" id="start-btn">Start Training</button>
-      <button class="btn btn-danger" id="stop-btn" disabled>Stop Training</button>
+      <button class="btn btn-primary me-2" id="start-btn">▶️ Start Training</button>
+      <button class="btn btn-danger" id="stop-btn" disabled>⏹️ Stop Training</button>
     </div>
 
-    <!-- tabs -->
     <ul class="nav nav-tabs" id="mainTab" role="tablist">
-      <li class="nav-item" role="presentation">
-        <button
-          class="nav-link active"
-          id="config-tab"
-          data-bs-toggle="tab"
-          data-bs-target="#config"
-          type="button"
-          role="tab"
-        >Configuration</button>
+      <li class="nav-item">
+        <button class="nav-link active" id="config-tab" data-bs-toggle="tab" data-bs-target="#config">Configuration</button>
       </li>
-      <li class="nav-item" role="presentation">
-        <button
-          class="nav-link"
-          id="logs-tab"
-          data-bs-toggle="tab"
-          data-bs-target="#logs-pane"
-          type="button"
-          role="tab"
-        >Logs</button>
+      <li class="nav-item">
+        <button class="nav-link" id="datasets-tab" data-bs-toggle="tab" data-bs-target="#datasets-pane">Datasets</button>
       </li>
-      <li class="nav-item" role="presentation">
-        <button
-          class="nav-link"
-          id="models-tab"
-          data-bs-toggle="tab"
-          data-bs-target="#models-pane"
-          type="button"
-          role="tab"
-        >Models</button>
+      <li class="nav-item">
+        <button class="nav-link" id="logs-tab" data-bs-toggle="tab" data-bs-target="#logs-pane">Logs</button>
+      </li>
+      <li class="nav-item">
+        <button class="nav-link" id="models-tab" data-bs-toggle="tab" data-bs-target="#models-pane">Models</button>
       </li>
     </ul>
 
     <div class="tab-content" id="mainTabContent">
-      <!-- Config -->
-      <div
-        class="tab-pane fade show active p-4"
-        id="config"
-        role="tabpanel"
-      >
-        <!-- upload form -->
-        <form
-          action="/upload_dataset"
-          method="POST"
-          enctype="multipart/form-data"
-          class="mb-4"
-        >
-          <label class="form-label">Upload dataset:</label>
-          <div class="input-group">
-            <input
-              type="file"
-              name="dataset_file"
-              class="form-control"
-            >
-            <button class="btn btn-outline-secondary" type="submit">
-              Upload
-            </button>
-          </div>
-        </form>
-
+      <!-- Configuration -->
+      <div class="tab-pane fade show active p-4" id="config">
         <form id="config-form" class="row g-3">
-          {% for key, value in config.items() %}
-            {% if key == 'DATA_PATH' %}
-              <div class="col-md-6">
-                <label
-                  for="{{ key }}"
-                  class="form-label text-capitalize"
-                >
-                  {{ key.lower().replace('_',' ').capitalize() }}
-                </label>
-                <select
-                  class="form-select"
-                  id="{{ key }}"
-                  name="{{ key }}"
-                >
-                  {% for ds in datasets %}
-                    <option
-                      value="datasets/{{ ds }}"
-                      {% if value.endswith(ds) %}selected{% endif %}
-                    >
-                      {{ ds }}
-                    </option>
-                  {% endfor %}
-                </select>
-              </div>
-            {% else %}
-              <div class="col-md-6">
-                <label
-                  for="{{ key }}"
-                  class="form-label text-capitalize"
-                >
-                  {{ key.lower().replace('_',' ').capitalize() }}
-                </label>
-                <input
-                  type="text"
-                  class="form-control"
-                  id="{{ key }}"
-                  name="{{ key }}"
-                  value="{{ value }}"
-                >
-              </div>
-            {% endif %}
+          <!-- Dataset selector -->
+          <div class="col-md-6">
+            <label for="dataset" class="form-label">Dataset</label>
+            <select class="form-select" id="dataset" name="dataset">
+              {% for ds in datasets %}
+                <option value="{{ ds }}" {% if config.DATA_PATH.endswith(ds) %}selected{% endif %}>
+                  {{ ds }}
+                </option>
+              {% endfor %}
+            </select>
+          </div>
+          {% for key, value in config.items() if key != 'DATA_PATH' %}
+            <div class="col-md-6">
+              <label for="{{ key }}" class="form-label text-capitalize">
+                {{ key.lower().replace('_',' ').capitalize() }}
+              </label>
+              <input
+                type="text"
+                class="form-control"
+                id="{{ key }}"
+                name="{{ key }}"
+                value="{{ value }}"
+              >
+            </div>
           {% endfor %}
         </form>
       </div>
 
+      <!-- Datasets -->
+      <div class="tab-pane fade p-4" id="datasets-pane">
+        <h5>Upload New Dataset</h5>
+        <form action="{{ url_for('upload_dataset') }}" method="POST" enctype="multipart/form-data" class="mb-4">
+          <div class="input-group">
+            <input type="file" name="dataset_file" class="form-control">
+            <button class="btn btn-outline-secondary" type="submit">📤 Upload</button>
+          </div>
+        </form>
+
+        <h5>Existing Datasets</h5>
+        <ul class="list-group">
+          {% if datasets %}
+            {% for ds in datasets %}
+              <li class="list-group-item d-flex justify-content-between align-items-center">
+                {{ ds }}
+                <form action="{{ url_for('delete_dataset') }}" method="POST" style="margin:0;">
+                  <input type="hidden" name="dataset_name" value="{{ ds }}">
+                  <button type="submit" class="btn btn-sm btn-danger" onclick="return confirm('Delete dataset {{ ds }}?');">
+                    🗑️ Delete
+                  </button>
+                </form>
+              </li>
+            {% endfor %}
+          {% else %}
+            <li class="list-group-item text-muted">No datasets found</li>
+          {% endif %}
+        </ul>
+      </div>
+
       <!-- Logs -->
-      <div
-        class="tab-pane fade p-4"
-        id="logs-pane"
-        role="tabpanel"
-      >
+      <div class="tab-pane fade p-4" id="logs-pane">
         <div class="d-flex justify-content-between mb-2">
           <h5>Logs</h5>
-          <button class="btn btn-sm btn-secondary" id="clear-logs-btn">
-            Clear Logs
-          </button>
+          <button class="btn btn-sm btn-secondary" id="clear-logs-btn">🧹 Clear Logs</button>
         </div>
-        <pre
-          id="logs"
-          class="border p-3 bg-white"
-          style="height:400px; overflow-y:scroll;"
-        ></pre>
+        <pre id="logs" class="border p-3 bg-white" style="height:400px; overflow-y:scroll;"></pre>
       </div>
 
       <!-- Models -->
-      <div
-        class="tab-pane fade p-4"
-        id="models-pane"
-        role="tabpanel"
-      >
+      <div class="tab-pane fade p-4" id="models-pane">
         <h5>Existing Models in <code>result/</code></h5>
         <ul class="list-group">
           {% if models %}
@@ -167,9 +135,7 @@
     </div>
   </div>
 
-  <script
-    src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/js/bootstrap.bundle.min.js"
-  ></script>
+  <script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/js/bootstrap.bundle.min.js"></script>
   <script>
     const startBtn     = document.getElementById('start-btn');
     const stopBtn      = document.getElementById('stop-btn');
@@ -183,7 +149,7 @@
       const res = await fetch('/status');
       const { status } = await res.json();
       statusEl.textContent = status;
-      const running = status.includes('in progress') || status==='Queued';
+      const running = status.includes('in progress') || status.includes('⏳');
       startBtn.disabled = running;
       stopBtn.disabled  = !running;
     }
@@ -200,19 +166,14 @@
 
     document.addEventListener('DOMContentLoaded', () => {
       fetchStatus();
-      document
-        .getElementById('logs-tab')
-        .addEventListener('shown.bs.tab', openLogsStream);
+      document.getElementById('logs-tab').addEventListener('shown.bs.tab', openLogsStream);
     });
 
     startBtn.addEventListener('click', async () => {
       startBtn.disabled = true;
       stopBtn.disabled  = false;
-      statusEl.textContent = 'Starting...';
-      await fetch('/train', {
-        method: 'POST',
-        body: new FormData(form)
-      });
+      statusEl.textContent = '🚀 Starting...';
+      await fetch('/train', { method: 'POST', body: new FormData(form) });
       fetchStatus();
     });
 
