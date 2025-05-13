@@ -1,0 +1,231 @@
+<!-- index.html -->
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Training Dashboard</title>
+  <link
+    href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/css/bootstrap.min.css"
+    rel="stylesheet"
+  >
+</head>
+<body class="bg-light">
+  <div class="container py-5">
+    <h1 class="mb-1">Model Training Dashboard</h1>
+    <p class="lead mb-4">
+      Status: <strong id="status">Idle</strong>
+    </p>
+    <div class="mb-4">
+      <button class="btn btn-primary me-2" id="start-btn">Start Training</button>
+      <button class="btn btn-danger" id="stop-btn" disabled>Stop Training</button>
+    </div>
+
+    <!-- tabs -->
+    <ul class="nav nav-tabs" id="mainTab" role="tablist">
+      <li class="nav-item" role="presentation">
+        <button
+          class="nav-link active"
+          id="config-tab"
+          data-bs-toggle="tab"
+          data-bs-target="#config"
+          type="button"
+          role="tab"
+        >Configuration</button>
+      </li>
+      <li class="nav-item" role="presentation">
+        <button
+          class="nav-link"
+          id="logs-tab"
+          data-bs-toggle="tab"
+          data-bs-target="#logs-pane"
+          type="button"
+          role="tab"
+        >Logs</button>
+      </li>
+      <li class="nav-item" role="presentation">
+        <button
+          class="nav-link"
+          id="models-tab"
+          data-bs-toggle="tab"
+          data-bs-target="#models-pane"
+          type="button"
+          role="tab"
+        >Models</button>
+      </li>
+    </ul>
+
+    <div class="tab-content" id="mainTabContent">
+      <!-- Config -->
+      <div
+        class="tab-pane fade show active p-4"
+        id="config"
+        role="tabpanel"
+      >
+        <!-- upload form -->
+        <form
+          action="/upload_dataset"
+          method="POST"
+          enctype="multipart/form-data"
+          class="mb-4"
+        >
+          <label class="form-label">Upload dataset:</label>
+          <div class="input-group">
+            <input
+              type="file"
+              name="dataset_file"
+              class="form-control"
+            >
+            <button class="btn btn-outline-secondary" type="submit">
+              Upload
+            </button>
+          </div>
+        </form>
+
+        <form id="config-form" class="row g-3">
+          {% for key, value in config.items() %}
+            {% if key == 'DATA_PATH' %}
+              <div class="col-md-6">
+                <label
+                  for="{{ key }}"
+                  class="form-label text-capitalize"
+                >
+                  {{ key.lower().replace('_',' ').capitalize() }}
+                </label>
+                <select
+                  class="form-select"
+                  id="{{ key }}"
+                  name="{{ key }}"
+                >
+                  {% for ds in datasets %}
+                    <option
+                      value="datasets/{{ ds }}"
+                      {% if value.endswith(ds) %}selected{% endif %}
+                    >
+                      {{ ds }}
+                    </option>
+                  {% endfor %}
+                </select>
+              </div>
+            {% else %}
+              <div class="col-md-6">
+                <label
+                  for="{{ key }}"
+                  class="form-label text-capitalize"
+                >
+                  {{ key.lower().replace('_',' ').capitalize() }}
+                </label>
+                <input
+                  type="text"
+                  class="form-control"
+                  id="{{ key }}"
+                  name="{{ key }}"
+                  value="{{ value }}"
+                >
+              </div>
+            {% endif %}
+          {% endfor %}
+        </form>
+      </div>
+
+      <!-- Logs -->
+      <div
+        class="tab-pane fade p-4"
+        id="logs-pane"
+        role="tabpanel"
+      >
+        <div class="d-flex justify-content-between mb-2">
+          <h5>Logs</h5>
+          <button class="btn btn-sm btn-secondary" id="clear-logs-btn">
+            Clear Logs
+          </button>
+        </div>
+        <pre
+          id="logs"
+          class="border p-3 bg-white"
+          style="height:400px; overflow-y:scroll;"
+        ></pre>
+      </div>
+
+      <!-- Models -->
+      <div
+        class="tab-pane fade p-4"
+        id="models-pane"
+        role="tabpanel"
+      >
+        <h5>Existing Models in <code>result/</code></h5>
+        <ul class="list-group">
+          {% if models %}
+            {% for m in models %}
+              <li class="list-group-item">{{ m }}</li>
+            {% endfor %}
+          {% else %}
+            <li class="list-group-item text-muted">No models found</li>
+          {% endif %}
+        </ul>
+      </div>
+    </div>
+  </div>
+
+  <script
+    src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/js/bootstrap.bundle.min.js"
+  ></script>
+  <script>
+    const startBtn     = document.getElementById('start-btn');
+    const stopBtn      = document.getElementById('stop-btn');
+    const statusEl     = document.getElementById('status');
+    const logsEl       = document.getElementById('logs');
+    const clearLogsBtn = document.getElementById('clear-logs-btn');
+    const form         = document.getElementById('config-form');
+    let   evtSource    = null;
+
+    async function fetchStatus() {
+      const res = await fetch('/status');
+      const { status } = await res.json();
+      statusEl.textContent = status;
+      const running = status.includes('in progress') || status==='Queued';
+      startBtn.disabled = running;
+      stopBtn.disabled  = !running;
+    }
+
+    function openLogsStream() {
+      if (evtSource) return;
+      logsEl.textContent = '';
+      evtSource = new EventSource('/logs');
+      evtSource.onmessage = e => {
+        logsEl.textContent += e.data + '\n';
+        logsEl.scrollTop = logsEl.scrollHeight;
+      };
+    }
+
+    document.addEventListener('DOMContentLoaded', () => {
+      fetchStatus();
+      document
+        .getElementById('logs-tab')
+        .addEventListener('shown.bs.tab', openLogsStream);
+    });
+
+    startBtn.addEventListener('click', async () => {
+      startBtn.disabled = true;
+      stopBtn.disabled  = false;
+      statusEl.textContent = 'Starting...';
+      await fetch('/train', {
+        method: 'POST',
+        body: new FormData(form)
+      });
+      fetchStatus();
+    });
+
+    stopBtn.addEventListener('click', async () => {
+      stopBtn.disabled = true;
+      await fetch('/stop', { method: 'POST' });
+      fetchStatus();
+    });
+
+    clearLogsBtn.addEventListener('click', async () => {
+      await fetch('/clear_logs', { method: 'POST' });
+      logsEl.textContent = '';
+    });
+  </script>
+</body>
+</html>
