@@ -1,4 +1,3 @@
-# app.py
 import sys
 import os
 import json
@@ -13,7 +12,7 @@ from flask import (
 from werkzeug.utils import secure_filename
 from transformers import (
     AutoModelForCausalLM, AutoTokenizer,
-    Trainer, TrainingArguments
+    Trainer, TrainingArguments, TrainerCallback, TrainerState, TrainerControl
 )
 from peft import get_peft_model, LoraConfig, TaskType
 from datasets import load_dataset
@@ -66,14 +65,19 @@ STATUS_FILE = os.path.join("logs", "status.json")
 open(LOG_FILE,    "a").close()
 open(STATUS_FILE, "a").close()
 
-def write_status(s: str):
+def write_status(data):
+    """Overwrite STATUS_FILE with either a string or a dict."""
     with open(STATUS_FILE, "w") as f:
-        json.dump({"status": s}, f)
+        if isinstance(data, dict):
+            json.dump(data, f)
+        else:
+            json.dump({"status": data}, f)
 
 original_stdout = sys.stdout
 original_stderr = sys.stderr
 
 def write_log(msg: str):
+    """Append arbitrary messages (but NOT progress summaries) to the main log."""
     original_stdout.write(msg)
     original_stdout.flush()
     with open(LOG_FILE, "a") as f:
@@ -81,20 +85,73 @@ def write_log(msg: str):
             if line.strip():
                 f.write(line + "\n")
 
-def train_model(configs: dict):
-    # Redirect all prints into our logfile
+class ProgressCallback(TrainerCallback):
+    """Capture per-step progress, write latest to status.json AND keep only one 'Progress:' line in the log."""
+    def __init__(self, status_file, log_file, start_time):
+        self.status_file = status_file
+        self.log_file = log_file
+        self.start_time = start_time
 
+    def on_step_end(self, args, state: TrainerState, control: TrainerControl, **kwargs):
+        current = state.global_step
+        total   = state.max_steps or 1
+        pct     = current / total * 100
+        elapsed = time.time() - self.start_time
+        remaining = (elapsed * (total - current) / current) if current else 0.0
+        speed     = (current / elapsed) if elapsed else 0.0
+
+        # format hh:mm:ss or mm:ss
+        def fmt(t):
+            t = int(t)
+            h, rem = divmod(t, 3600)
+            m, s   = divmod(rem, 60)
+            return f"{h:02d}:{m:02d}:{s:02d}" if h else f"{m:02d}:{s:02d}"
+
+        # 1) update status.json (overwrites)
+        progress = {
+            "percentage": pct,
+            "current_step": current,
+            "total_steps": total,
+            "elapsed": fmt(elapsed),
+            "remaining": fmt(remaining),
+            "speed": speed
+        }
+        write_status({
+            "status": "🚀 Training in progress...",
+            "progress": progress
+        })
+
+        # 2) update main log: remove old 'Progress:' lines and append exactly one new summary
+        summary = (
+            f"Progress: {pct:.2f}% "
+            f"({current}/{total}) "
+            f"[Elapsed: {fmt(elapsed)} < Remaining: {fmt(remaining)}, "
+            f"{speed:.2f}it/s]"
+        )
+        try:
+            with open(self.log_file, "r") as f:
+                lines = f.readlines()
+        except FileNotFoundError:
+            lines = []
+        # keep everything except old progress summaries
+        filtered = [l for l in lines if not l.startswith("Progress:")]
+        filtered.append(summary + "\n")
+        with open(self.log_file, "w") as f:
+            f.writelines(filtered)
+
+def train_model(configs: dict):
     os.environ["CUDA_VISIBLE_DEVICES"] = configs["cuda_devices"]
 
     class Logger:
         def write(self, m): write_log(m)
         def flush(self): pass
-    sys.stdout = Logger(); sys.stderr = Logger()
 
-    write_status("🚀 Training in progress...")
+    sys.stdout = Logger()
+    sys.stderr = Logger()
+
+    write_status("⏳ Queued")
     try:
         write_log("=== Training started ===\n")
-
         write_log(f"Loading dataset from {configs['DATA_PATH']}...\n")
         ds = load_dataset("json", data_files=configs["DATA_PATH"])
         write_log("Dataset loaded.\n")
@@ -155,18 +212,25 @@ def train_model(configs: dict):
             logging_strategy=configs["logging_strategy"],
             save_strategy=configs["save_strategy"],
             save_total_limit=configs["save_total_limit"],
+            disable_tqdm=True,  # suppress built-in tqdm
         )
         if configs["eval_strategy"] == "steps":
             args.eval_steps = configs["eval_steps"]
         if configs["save_strategy"] == "steps":
             args.save_steps = configs["save_steps"]
 
+        # start timer
+        start_time = time.time()
+
+        # pass both STATUS_FILE and LOG_FILE so callback can manage the log
         trainer = Trainer(
             model=model,
             args=args,
             train_dataset=splits["train"],
             eval_dataset=splits["test"],
+            callbacks=[ProgressCallback(STATUS_FILE, LOG_FILE, start_time)]
         )
+
         write_log("Entering training loop...\n")
         trainer.train()
         write_log("Training loop ended.\n")
@@ -270,6 +334,7 @@ def stop():
         training_process.join()
         write_status("⏹️ Stopped")
         return jsonify(status="⏹️ Force killed"), 200
+    write_status("⏹️ Stopped")
     return jsonify(status="❌ No active training"), 400
 
 @app.route("/clear_logs", methods=["POST"])
@@ -279,12 +344,12 @@ def clear_logs():
 
 @app.route("/status")
 def status():
-    st = "🤖 Idle"
+    default = {"status": "🤖 Idle"}
     try:
-        st = json.load(open(STATUS_FILE)).get("status", st)
+        data = json.load(open(STATUS_FILE))
     except:
-        pass
-    return jsonify(status=st)
+        data = default
+    return jsonify(data)
 
 @app.route("/logs")
 def logs():
