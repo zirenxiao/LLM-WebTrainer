@@ -29,7 +29,7 @@ os.makedirs("logs", exist_ok=True)
 BASE_OUTPUT_DIR = "result"
 os.makedirs(BASE_OUTPUT_DIR, exist_ok=True)
 
-available_devices = [f"cuda:{i}" for i in range(torch.cuda.device_count())]
+available_devices = [f"{i}" for i in range(torch.cuda.device_count())]
 default_config = {
     "model_name": "Qwen/Qwen2.5-0.5B-Instruct",
     "text_mapping": "messages",
@@ -83,6 +83,9 @@ def write_log(msg: str):
 
 def train_model(configs: dict):
     # Redirect all prints into our logfile
+
+    os.environ["CUDA_VISIBLE_DEVICES"] = configs["cuda_devices"]
+
     class Logger:
         def write(self, m): write_log(m)
         def flush(self): pass
@@ -105,6 +108,10 @@ def train_model(configs: dict):
         tokenizer = AutoTokenizer.from_pretrained(configs["model_name"], **kwargs)
         model     = AutoModelForCausalLM.from_pretrained(configs["model_name"], **kwargs)
         write_log("Model ready.\n")
+
+        if tokenizer.pad_token is None:
+            tokenizer.pad_token = tokenizer.eos_token
+            write_log("⚙️ pad_token was not set; using eos_token as pad_token.\n")
 
         if configs["use_lora"]:
             peft_cfg = LoraConfig(
@@ -260,6 +267,7 @@ def stop():
     global training_process
     if 'training_process' in globals() and training_process.is_alive():
         training_process.terminate()
+        training_process.join()
         write_status("⏹️ Stopped")
         return jsonify(status="⏹️ Force killed"), 200
     return jsonify(status="❌ No active training"), 400
@@ -308,4 +316,4 @@ def delete_checkpoint():
     return redirect(url_for("index"))
 
 if __name__ == "__main__":
-    app.run(host="0.0.0.0", port=9999, debug=True)
+    app.run(host="0.0.0.0", port=9999, debug=False)
