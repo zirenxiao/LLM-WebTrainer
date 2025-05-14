@@ -4,6 +4,8 @@ import os
 import json
 import re
 import time
+import uuid
+import shutil
 from flask import (
     Flask, request, render_template,
     jsonify, Response, redirect, url_for, flash
@@ -24,8 +26,8 @@ app.secret_key = os.environ.get("SECRET_KEY", "supersecretkey")
 # ensure folders exist
 os.makedirs("datasets", exist_ok=True)
 os.makedirs("logs", exist_ok=True)
-OUTPUT_DIR = "result"
-os.makedirs(OUTPUT_DIR, exist_ok=True)
+BASE_OUTPUT_DIR = "result"
+os.makedirs(BASE_OUTPUT_DIR, exist_ok=True)
 
 available_devices = [f"cuda:{i}" for i in range(torch.cuda.device_count())]
 default_config = {
@@ -34,7 +36,7 @@ default_config = {
     "batch_size": 1,
     "epochs": 10,
     "learning_rate": 5e-5,
-    "DATA_PATH": "",  # set below based on selection
+    "DATA_PATH": "",
     "use_lora": True,
     "lora_r": 8,
     "lora_alpha": 16,
@@ -45,10 +47,10 @@ default_config = {
     "eval_strategy": "epoch",
     "eval_steps": 100,
     "weight_decay": 0.01,
-    "logging_dir": f"{OUTPUT_DIR}/logs",
     "logging_steps": 10,
     "logging_strategy": "epoch",
     "save_strategy": "epoch",
+    "save_steps": 100,
     "save_total_limit": 5,
     "cuda_devices": ",".join(available_devices),
 }
@@ -79,7 +81,8 @@ def write_log(msg: str):
             if line.strip():
                 f.write(line + "\n")
 
-def train_model():
+def train_model(configs: dict):
+    # Redirect all prints into our logfile
     class Logger:
         def write(self, m): write_log(m)
         def flush(self): pass
@@ -89,26 +92,26 @@ def train_model():
     try:
         write_log("=== Training started ===\n")
 
-        write_log(f"Loading dataset from {config['DATA_PATH']}...\n")
-        ds = load_dataset("json", data_files=config["DATA_PATH"])
+        write_log(f"Loading dataset from {configs['DATA_PATH']}...\n")
+        ds = load_dataset("json", data_files=configs["DATA_PATH"])
         write_log("Dataset loaded.\n")
 
         write_log("Initializing tokenizer & model...\n")
         kwargs = {}
-        if "gemma" in config["model_name"]:
+        if "gemma" in configs["model_name"]:
             kwargs["attn_implementation"] = "eager"
-        if len(config["cuda_devices"].split(",")) > 1:
+        if len(configs["cuda_devices"].split(",")) > 1:
             kwargs["device_map"] = "auto"
-        tokenizer = AutoTokenizer.from_pretrained(config["model_name"], **kwargs)
-        model     = AutoModelForCausalLM.from_pretrained(config["model_name"], **kwargs)
+        tokenizer = AutoTokenizer.from_pretrained(configs["model_name"], **kwargs)
+        model     = AutoModelForCausalLM.from_pretrained(configs["model_name"], **kwargs)
         write_log("Model ready.\n")
 
-        if config["use_lora"]:
+        if configs["use_lora"]:
             peft_cfg = LoraConfig(
                 task_type=TaskType.CAUSAL_LM,
-                r=config["lora_r"],
-                lora_alpha=config["lora_alpha"],
-                lora_dropout=config["lora_dropout"],
+                r=configs["lora_r"],
+                lora_alpha=configs["lora_alpha"],
+                lora_dropout=configs["lora_dropout"],
                 target_modules=["q_proj","v_proj"]
             )
             model = get_peft_model(model, peft_cfg)
@@ -117,36 +120,39 @@ def train_model():
         write_log("Tokenizing...\n")
         def tok(ex):
             inp = tokenizer(
-                json.dumps(ex[config["text_mapping"]]),
-                padding=config["padding_strategy"],
+                json.dumps(ex[configs["text_mapping"]]),
+                padding=configs["padding_strategy"],
                 truncation=True,
-                max_length=config["padding_max_length"]
+                max_length=configs["padding_max_length"]
             )
             inp["labels"] = inp["input_ids"].copy()
             return inp
 
         tokenized = ds.map(tok, batched=False)
         splits = tokenized["train"].train_test_split(
-            test_size=config["eval_dataset_percentage"]
+            test_size=configs["eval_dataset_percentage"]
         )
         write_log("Tokenization done.\n")
 
+        write_log("Initializing TrainingArguments...\n")
         args = TrainingArguments(
-            output_dir=OUTPUT_DIR,
-            eval_strategy=config["eval_strategy"],
-            learning_rate=config["learning_rate"],
-            per_device_train_batch_size=config["batch_size"],
-            per_device_eval_batch_size=config["batch_size"],
-            num_train_epochs=config["epochs"],
-            weight_decay=config["weight_decay"],
-            logging_dir=config["logging_dir"],
-            logging_steps=config["logging_steps"],
-            logging_strategy=config["logging_strategy"],
-            save_strategy=config["save_strategy"],
-            save_total_limit=config["save_total_limit"],
+            output_dir=configs["output_dir"],
+            eval_strategy=configs["eval_strategy"],
+            learning_rate=configs["learning_rate"],
+            per_device_train_batch_size=configs["batch_size"],
+            per_device_eval_batch_size=configs["batch_size"],
+            num_train_epochs=configs["epochs"],
+            weight_decay=configs["weight_decay"],
+            logging_dir=configs["logging_dir"],
+            logging_steps=configs["logging_steps"],
+            logging_strategy=configs["logging_strategy"],
+            save_strategy=configs["save_strategy"],
+            save_total_limit=configs["save_total_limit"],
         )
-        if config["eval_strategy"] == "steps":
-            args.eval_steps = config["eval_steps"]
+        if configs["eval_strategy"] == "steps":
+            args.eval_steps = configs["eval_steps"]
+        if configs["save_strategy"] == "steps":
+            args.save_steps = configs["save_steps"]
 
         trainer = Trainer(
             model=model,
@@ -171,16 +177,21 @@ def train_model():
 @app.route("/", methods=["GET"])
 def index():
     datasets = sorted(os.listdir("datasets"))
-    models   = sorted(
-        d for d in os.listdir(OUTPUT_DIR)
-        if os.path.isdir(os.path.join(OUTPUT_DIR, d))
-    )
+    runs = []
+    for run in sorted(os.listdir(BASE_OUTPUT_DIR)):
+        run_path = os.path.join(BASE_OUTPUT_DIR, run)
+        if os.path.isdir(run_path):
+            checkpoints = sorted(
+                d for d in os.listdir(run_path)
+                if os.path.isdir(os.path.join(run_path, d))
+            )
+            runs.append({"name": run, "checkpoints": checkpoints})
     return render_template(
         "index.html",
         config=config,
         devices=available_devices,
         datasets=datasets,
-        models=models
+        runs=runs
     )
 
 @app.route("/upload_dataset", methods=["POST"])
@@ -207,7 +218,7 @@ def delete_dataset():
 
 @app.route("/train", methods=["POST"])
 def train():
-    # update config from form (except DATA_PATH text field)
+    # update config from form
     for k in config:
         if k == "DATA_PATH":
             continue
@@ -220,11 +231,18 @@ def train():
                     config[k] = float(v)
                 except ValueError:
                     config[k] = v
-
-    # set DATA_PATH based on dropdown
+    # set DATA_PATH
     selected = request.form.get("dataset")
     if selected:
         config["DATA_PATH"] = os.path.join("datasets", selected)
+
+    # prepare new run directory
+    run_id = time.strftime("%Y%m%d") + "-" + uuid.uuid4().hex[:6]
+    run_output_dir = os.path.join(BASE_OUTPUT_DIR, run_id)
+    os.makedirs(run_output_dir, exist_ok=True)
+    # update config for this run
+    config["output_dir"]  = run_output_dir
+    config["logging_dir"] = os.path.join(run_output_dir, "logs")
 
     global training_process
     if 'training_process' in globals() and training_process.is_alive():
@@ -233,7 +251,7 @@ def train():
     open(LOG_FILE, "w").close()
     write_status("⏳ Queued")
 
-    training_process = Process(target=train_model)
+    training_process = Process(target=train_model, args=(config,))
     training_process.start()
     return jsonify(status="🚀 Training started")
 
@@ -263,24 +281,12 @@ def status():
 @app.route("/logs")
 def logs():
     def generate():
-        # ensure file exists
         open(LOG_FILE, "a").close()
-
         with open(LOG_FILE, "r") as f:
-            # send any existing lines
-
             for line in f:
                 yield f"data: {line.rstrip()}\n\n"
-                # now tail, but reset on truncation
-
             while True:
-                # if file was truncated, rewind
-                try:
-                    if f.tell() > os.path.getsize(LOG_FILE):
-                        f.seek(0)
-                except FileNotFoundError:
-                    # in case file was removed, recreate & rewind
-                    open(LOG_FILE, "a").close()
+                if f.tell() > os.path.getsize(LOG_FILE):
                     f.seek(0)
                 line = f.readline()
                 if line:
@@ -288,6 +294,18 @@ def logs():
                 else:
                     time.sleep(0.5)
     return Response(generate(), mimetype="text/event-stream")
+
+@app.route("/delete_checkpoint", methods=["POST"])
+def delete_checkpoint():
+    run_name   = request.form.get("run_name")
+    ckpt_name  = request.form.get("checkpoint_name")
+    path       = os.path.join(BASE_OUTPUT_DIR, run_name, ckpt_name)
+    if run_name and ckpt_name and os.path.isdir(path):
+        shutil.rmtree(path)
+        flash(f"🗑️ Checkpoint deleted: {run_name}/{ckpt_name}")
+    else:
+        flash(f"❌ Could not delete checkpoint: {run_name}/{ckpt_name}")
+    return redirect(url_for("index"))
 
 if __name__ == "__main__":
     app.run(host="0.0.0.0", port=9999, debug=True)

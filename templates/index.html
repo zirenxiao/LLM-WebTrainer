@@ -52,7 +52,6 @@
       <!-- Configuration -->
       <div class="tab-pane fade show active p-4" id="config">
         <form id="config-form" class="row g-3">
-          <!-- Dataset selector -->
           <div class="col-md-6">
             <label for="dataset" class="form-label">Dataset</label>
             <select class="form-select" id="dataset" name="dataset">
@@ -63,7 +62,7 @@
               {% endfor %}
             </select>
           </div>
-          {% for key, value in config.items() if key != 'DATA_PATH' %}
+          {% for key, value in config.items() if key != 'DATA_PATH' and key not in ['output_dir','logging_dir'] %}
             <div class="col-md-6">
               <label for="{{ key }}" class="form-label text-capitalize">
                 {{ key.lower().replace('_',' ').capitalize() }}
@@ -98,9 +97,7 @@
                 {{ ds }}
                 <form action="{{ url_for('delete_dataset') }}" method="POST" style="margin:0;">
                   <input type="hidden" name="dataset_name" value="{{ ds }}">
-                  <button type="submit" class="btn btn-sm btn-danger" onclick="return confirm('Delete dataset {{ ds }}?');">
-                    🗑️ Delete
-                  </button>
+                  <button type="submit" class="btn btn-sm btn-danger" onclick="return confirm('Delete dataset {{ ds }}?');">🗑️ Delete</button>
                 </form>
               </li>
             {% endfor %}
@@ -121,16 +118,32 @@
 
       <!-- Models -->
       <div class="tab-pane fade p-4" id="models-pane">
-        <h5>Existing Models in <code>result/</code></h5>
-        <ul class="list-group">
-          {% if models %}
-            {% for m in models %}
-              <li class="list-group-item">{{ m }}</li>
-            {% endfor %}
-          {% else %}
-            <li class="list-group-item text-muted">No models found</li>
-          {% endif %}
-        </ul>
+        <h5>Existing Model Runs in <code>result/</code></h5>
+        {% if runs %}
+          {% for run in runs %}
+            <div class="mb-3">
+              <h6>{{ run.name }}</h6>
+              {% if run.checkpoints %}
+                <ul class="list-group mb-2">
+                  {% for ckpt in run.checkpoints %}
+                    <li class="list-group-item d-flex justify-content-between align-items-center">
+                      {{ ckpt }}
+                      <form action="{{ url_for('delete_checkpoint') }}" method="POST" style="margin:0;">
+                        <input type="hidden" name="run_name" value="{{ run.name }}">
+                        <input type="hidden" name="checkpoint_name" value="{{ ckpt }}">
+                        <button type="submit" class="btn btn-sm btn-danger" onclick="return confirm('Delete checkpoint {{ ckpt }}?');">🗑️ Delete</button>
+                      </form>
+                    </li>
+                  {% endfor %}
+                </ul>
+              {% else %}
+                <p class="text-muted">No checkpoints for this run.</p>
+              {% endif %}
+            </div>
+          {% endfor %}
+        {% else %}
+          <p class="text-muted">No model runs found</p>
+        {% endif %}
       </div>
     </div>
   </div>
