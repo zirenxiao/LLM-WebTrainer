@@ -107,7 +107,6 @@ class ProgressCallback(TrainerCallback):
             m, s   = divmod(rem, 60)
             return f"{h:02d}:{m:02d}:{s:02d}" if h else f"{m:02d}:{s:02d}"
 
-        # 1) update status.json (overwrites)
         progress = {
             "percentage": pct,
             "current_step": current,
@@ -120,24 +119,6 @@ class ProgressCallback(TrainerCallback):
             "status": "🚀 Training in progress...",
             "progress": progress
         })
-
-        # 2) update main log: remove old 'Progress:' lines and append exactly one new summary
-        summary = (
-            f"Progress: {pct:.2f}% "
-            f"({current}/{total}) "
-            f"[Elapsed: {fmt(elapsed)} < Remaining: {fmt(remaining)}, "
-            f"{speed:.2f}it/s]"
-        )
-        try:
-            with open(self.log_file, "r") as f:
-                lines = f.readlines()
-        except FileNotFoundError:
-            lines = []
-        # keep everything except old progress summaries
-        filtered = [l for l in lines if not l.startswith("Progress:")]
-        filtered.append(summary + "\n")
-        with open(self.log_file, "w") as f:
-            f.writelines(filtered)
 
 def train_model(configs: dict):
     os.environ["CUDA_VISIBLE_DEVICES"] = configs["cuda_devices"]
@@ -212,17 +193,14 @@ def train_model(configs: dict):
             logging_strategy=configs["logging_strategy"],
             save_strategy=configs["save_strategy"],
             save_total_limit=configs["save_total_limit"],
-            disable_tqdm=True,  # suppress built-in tqdm
+            disable_tqdm=True,
         )
         if configs["eval_strategy"] == "steps":
             args.eval_steps = configs["eval_steps"]
         if configs["save_strategy"] == "steps":
             args.save_steps = configs["save_steps"]
 
-        # start timer
         start_time = time.time()
-
-        # pass both STATUS_FILE and LOG_FILE so callback can manage the log
         trainer = Trainer(
             model=model,
             args=args,
@@ -289,7 +267,6 @@ def delete_dataset():
 
 @app.route("/train", methods=["POST"])
 def train():
-    # update config from form
     for k in config:
         if k == "DATA_PATH":
             continue
@@ -302,16 +279,13 @@ def train():
                     config[k] = float(v)
                 except ValueError:
                     config[k] = v
-    # set DATA_PATH
     selected = request.form.get("dataset")
     if selected:
         config["DATA_PATH"] = os.path.join("datasets", selected)
 
-    # prepare new run directory
     run_id = time.strftime("%Y%m%d") + "-" + uuid.uuid4().hex[:6]
     run_output_dir = os.path.join(BASE_OUTPUT_DIR, run_id)
     os.makedirs(run_output_dir, exist_ok=True)
-    # update config for this run
     config["output_dir"]  = run_output_dir
     config["logging_dir"] = os.path.join(run_output_dir, "logs")
 
@@ -334,7 +308,6 @@ def stop():
         training_process.join()
         write_status("⏹️ Stopped")
         return jsonify(status="⏹️ Force killed"), 200
-    write_status("⏹️ Stopped")
     return jsonify(status="❌ No active training"), 400
 
 @app.route("/clear_logs", methods=["POST"])
@@ -378,6 +351,17 @@ def delete_checkpoint():
         flash(f"🗑️ Checkpoint deleted: {run_name}/{ckpt_name}")
     else:
         flash(f"❌ Could not delete checkpoint: {run_name}/{ckpt_name}")
+    return redirect(url_for("index"))
+
+@app.route("/delete_run", methods=["POST"])
+def delete_run():
+    run_name = request.form.get("run_name")
+    path = os.path.join(BASE_OUTPUT_DIR, run_name)
+    if run_name and os.path.isdir(path):
+        shutil.rmtree(path)
+        flash(f"🗑️ Run deleted: {run_name}")
+    else:
+        flash(f"❌ Could not delete run: {run_name}")
     return redirect(url_for("index"))
 
 if __name__ == "__main__":

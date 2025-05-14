@@ -128,9 +128,16 @@
         {% if runs %}
           {% for run in runs %}
             <div class="mb-3">
-              <h6>{{ run.name }}</h6>
+              <h6 class="d-inline-block">{{ run.name }}</h6>
+              <form action="{{ url_for('delete_run') }}" method="POST" class="d-inline-block ms-2">
+                <input type="hidden" name="run_name" value="{{ run.name }}">
+                <button type="submit" class="btn btn-sm btn-outline-danger" onclick="return confirm('Delete run {{ run.name }} and all its checkpoints?');">
+                  🗑️ Delete Run
+                </button>
+              </form>
+
               {% if run.checkpoints %}
-                <ul class="list-group mb-2">
+                <ul class="list-group mt-2 mb-2">
                   {% for ckpt in run.checkpoints %}
                     <li class="list-group-item d-flex justify-content-between align-items-center">
                       {{ ckpt }}
@@ -171,7 +178,6 @@
       statusEl.textContent = data.status;
 
       if (data.progress) {
-        // show progress bar
         document.getElementById('progress-container').style.display = 'block';
         const pct = data.progress.percentage.toFixed(2);
         const bar = document.getElementById('progress-bar');
@@ -185,7 +191,6 @@
         stopBtn.disabled  = false;
       } else {
         document.getElementById('progress-container').style.display = 'none';
-        // allow start if idle/completed
         startBtn.disabled = data.status.includes('Training in progress');
         stopBtn.disabled  = !data.status.includes('Training in progress');
       }
