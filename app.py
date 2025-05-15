@@ -15,7 +15,7 @@ from transformers import (
     Trainer, TrainingArguments, TrainerCallback, TrainerState, TrainerControl
 )
 from peft import get_peft_model, LoraConfig, TaskType
-from datasets import load_dataset
+from datasets import load_dataset, Dataset
 import torch
 from multiprocessing import Process
 
@@ -55,79 +55,82 @@ default_config = {
 }
 config = default_config.copy()
 
-# Pre-set DATA_PATH to first dataset if exists
 datasets_list = sorted(os.listdir("datasets"))
 if datasets_list:
     config["DATA_PATH"] = os.path.join("datasets", datasets_list[0])
 
-LOG_FILE    = os.path.join("logs", "flask_logs.txt")
+LOG_FILE = os.path.join("logs", "flask_logs.txt")
 STATUS_FILE = os.path.join("logs", "status.json")
-open(LOG_FILE,    "a").close()
+open(LOG_FILE, "a").close()
 open(STATUS_FILE, "a").close()
 
+
 def write_status(data):
-    """Overwrite STATUS_FILE with either a string or a dict."""
     with open(STATUS_FILE, "w") as f:
         if isinstance(data, dict):
             json.dump(data, f)
         else:
             json.dump({"status": data}, f)
 
+
 original_stdout = sys.stdout
 original_stderr = sys.stderr
 
+
 def write_log(msg: str):
-    """Append arbitrary messages (but NOT progress summaries) to the main log."""
     original_stdout.write(msg)
     original_stdout.flush()
     with open(LOG_FILE, "a") as f:
         for line in re.split(r"\r\n|\r|\n", msg):
-            if line.strip():
-                f.write(line + "\n")
+            if line.strip(): f.write(line + "\n")
+
 
 class ProgressCallback(TrainerCallback):
-    """Capture per-step progress, write latest to status.json AND keep only one 'Progress:' line in the log."""
-    def __init__(self, status_file, log_file, start_time):
+    def __init__(self, status_file, start_time):
         self.status_file = status_file
-        self.log_file = log_file
         self.start_time = start_time
 
     def on_step_end(self, args, state: TrainerState, control: TrainerControl, **kwargs):
         current = state.global_step
-        total   = state.max_steps or 1
-        pct     = current / total * 100
+        total = state.max_steps or 1
+        pct = current / total * 100
         elapsed = time.time() - self.start_time
         remaining = (elapsed * (total - current) / current) if current else 0.0
-        speed     = (current / elapsed) if elapsed else 0.0
+        speed = (current / elapsed) if elapsed else 0.0
 
-        # format hh:mm:ss or mm:ss
         def fmt(t):
-            t = int(t)
-            h, rem = divmod(t, 3600)
-            m, s   = divmod(rem, 60)
+            t = int(t);
+            h, rem = divmod(t, 3600);
+            m, s = divmod(rem, 60)
             return f"{h:02d}:{m:02d}:{s:02d}" if h else f"{m:02d}:{s:02d}"
 
-        progress = {
-            "percentage": pct,
-            "current_step": current,
-            "total_steps": total,
-            "elapsed": fmt(elapsed),
-            "remaining": fmt(remaining),
-            "speed": speed
-        }
-        write_status({
-            "status": "🚀 Training in progress...",
-            "progress": progress
-        })
+        progress = {"percentage": pct, "current_step": current, "total_steps": total,
+                    "elapsed": fmt(elapsed), "remaining": fmt(remaining), "speed": speed}
+        write_status({"status": "🚀 Training in progress...", "progress": progress})
+
+
+class EvalCallback(TrainerCallback):
+    def __init__(self, status_file, eval_steps):
+        self.status_file = status_file
+        self.eval_steps = eval_steps
+        self.count = 0
+
+    def on_prediction_step(self, args, state, control, **kwargs):
+        self.count += 1
+        pct = self.count / self.eval_steps * 100
+        write_status({"status": "🔍 (In Train) Evaluating...",
+                      "progress": {"percentage": pct, "current_step": self.count, "total_steps": self.eval_steps}})
+
 
 def train_model(configs: dict):
     os.environ["CUDA_VISIBLE_DEVICES"] = configs["cuda_devices"]
 
     class Logger:
         def write(self, m): write_log(m)
+
         def flush(self): pass
 
-    sys.stdout = Logger()
+    sys.stdout = Logger();
     sys.stderr = Logger()
 
     write_status("⏳ Queued")
@@ -139,12 +142,10 @@ def train_model(configs: dict):
 
         write_log("Initializing tokenizer & model...\n")
         kwargs = {}
-        if "gemma" in configs["model_name"]:
-            kwargs["attn_implementation"] = "eager"
-        if len(configs["cuda_devices"].split(",")) > 1:
-            kwargs["device_map"] = "auto"
+        if "gemma" in configs["model_name"]: kwargs["attn_implementation"] = "eager"
+        if len(configs["cuda_devices"].split(",")) > 1: kwargs["device_map"] = "auto"
         tokenizer = AutoTokenizer.from_pretrained(configs["model_name"], **kwargs)
-        model     = AutoModelForCausalLM.from_pretrained(configs["model_name"], **kwargs)
+        model = AutoModelForCausalLM.from_pretrained(configs["model_name"], **kwargs)
         write_log("Model ready.\n")
 
         if tokenizer.pad_token is None:
@@ -152,67 +153,60 @@ def train_model(configs: dict):
             write_log("⚙️ pad_token was not set; using eos_token as pad_token.\n")
 
         if configs["use_lora"]:
-            peft_cfg = LoraConfig(
-                task_type=TaskType.CAUSAL_LM,
-                r=configs["lora_r"],
-                lora_alpha=configs["lora_alpha"],
-                lora_dropout=configs["lora_dropout"],
-                target_modules=["q_proj","v_proj"]
-            )
+            peft_cfg = LoraConfig(task_type=TaskType.CAUSAL_LM, r=configs["lora_r"],
+                                  lora_alpha=configs["lora_alpha"], lora_dropout=configs["lora_dropout"],
+                                  target_modules=["q_proj", "v_proj"])
             model = get_peft_model(model, peft_cfg)
             write_log("LoRA applied.\n")
 
+        # Tokenizing with progress updates
         write_log("Tokenizing...\n")
-        def tok(ex):
-            inp = tokenizer(
-                json.dumps(ex[configs["text_mapping"]]),
-                padding=configs["padding_strategy"],
-                truncation=True,
-                max_length=configs["padding_max_length"]
-            )
-            inp["labels"] = inp["input_ids"].copy()
-            return inp
-
-        tokenized = ds.map(tok, batched=False)
-        splits = tokenized["train"].train_test_split(
-            test_size=configs["eval_dataset_percentage"]
-        )
+        data = ds["train"]
+        total = len(data)
+        tokenized_list = []
+        start_t = time.time()
+        for idx, ex in enumerate(data):
+            inputs = tokenizer(json.dumps(ex[configs["text_mapping"]]),
+                               padding=configs["padding_strategy"],
+                               truncation=True, max_length=configs["padding_max_length"])
+            inputs["labels"] = inputs["input_ids"].copy()
+            tokenized_list.append(inputs)
+            pct = (idx + 1) / total * 100
+            elapsed = time.time() - start_t
+            rem = elapsed * (total - (idx + 1)) / (idx + 1)
+            speed = (idx + 1) / elapsed
+            write_status({"status": "🔄 Tokenizing dataset...",
+                          "progress": {"percentage": pct, "current_step": idx + 1, "total_steps": total,
+                                       "elapsed": f"{int(elapsed)}s", "remaining": f"{int(rem)}s", "speed": speed}})
+        tokenized = Dataset.from_list(tokenized_list)
         write_log("Tokenization done.\n")
+
+        splits = tokenized.train_test_split(test_size=configs["eval_dataset_percentage"])
 
         write_log("Initializing TrainingArguments...\n")
         args = TrainingArguments(
-            output_dir=configs["output_dir"],
-            eval_strategy=configs["eval_strategy"],
-            learning_rate=configs["learning_rate"],
-            per_device_train_batch_size=configs["batch_size"],
-            per_device_eval_batch_size=configs["batch_size"],
-            num_train_epochs=configs["epochs"],
-            weight_decay=configs["weight_decay"],
-            logging_dir=configs["logging_dir"],
-            logging_steps=configs["logging_steps"],
-            logging_strategy=configs["logging_strategy"],
-            save_strategy=configs["save_strategy"],
-            save_total_limit=configs["save_total_limit"],
-            disable_tqdm=True,
+            output_dir=configs["output_dir"], eval_strategy=configs["eval_strategy"],
+            learning_rate=configs["learning_rate"], per_device_train_batch_size=configs["batch_size"],
+            per_device_eval_batch_size=configs["batch_size"], num_train_epochs=configs["epochs"],
+            weight_decay=configs["weight_decay"], logging_dir=configs["logging_dir"],
+            logging_steps=configs["logging_steps"], logging_strategy=configs["logging_strategy"],
+            save_strategy=configs["save_strategy"], save_total_limit=configs["save_total_limit"], disable_tqdm=True
         )
-        if configs["eval_strategy"] == "steps":
-            args.eval_steps = configs["eval_steps"]
-        if configs["save_strategy"] == "steps":
-            args.save_steps = configs["save_steps"]
+        if configs["eval_strategy"] == "steps": args.eval_steps = configs["eval_steps"]
+        if configs["save_strategy"] == "steps": args.save_steps = configs["save_steps"]
 
         start_time = time.time()
         trainer = Trainer(
-            model=model,
-            args=args,
-            train_dataset=splits["train"],
-            eval_dataset=splits["test"],
-            callbacks=[ProgressCallback(STATUS_FILE, LOG_FILE, start_time)]
+            model=model, args=args,
+            train_dataset=splits["train"], eval_dataset=splits["test"],
+            callbacks=[ProgressCallback(STATUS_FILE, start_time), EvalCallback(STATUS_FILE, len(splits["test"]))]
         )
 
         write_log("Entering training loop...\n")
         trainer.train()
         write_log("Training loop ended.\n")
 
+        write_log("Starting evaluation...\n")
         results = trainer.evaluate()
         write_log(f"=== Training completed: {results} ===\n")
         write_status("✅ Completed")
