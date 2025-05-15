@@ -11,7 +11,7 @@
 </head>
 <body class="bg-light">
   <div class="container py-5">
-    <h1 class="mb-1">Model Training Dashboard</h1>
+    <h1 class="mb-1">Model Training & Testing Dashboard</h1>
 
     <!-- Status + progress bar -->
     <p class="lead mb-1">
@@ -42,22 +42,25 @@
 
     <ul class="nav nav-tabs" id="mainTab" role="tablist">
       <li class="nav-item">
-        <button class="nav-link active" id="config-tab" data-bs-toggle="tab" data-bs-target="#config">Configuration</button>
+        <button class="nav-link {% if active_tab=='config' %}active{% endif %}" id="config-tab" data-bs-toggle="tab" data-bs-target="#config">Configuration</button>
       </li>
       <li class="nav-item">
-        <button class="nav-link" id="datasets-tab" data-bs-toggle="tab" data-bs-target="#datasets-pane">Datasets</button>
+        <button class="nav-link {% if active_tab=='datasets' %}active{% endif %}" id="datasets-tab" data-bs-toggle="tab" data-bs-target="#datasets-pane">Datasets</button>
       </li>
       <li class="nav-item">
-        <button class="nav-link" id="logs-tab" data-bs-toggle="tab" data-bs-target="#logs-pane">Logs</button>
+        <button class="nav-link {% if active_tab=='logs' %}active{% endif %}" id="logs-tab" data-bs-toggle="tab" data-bs-target="#logs-pane">Logs</button>
       </li>
       <li class="nav-item">
-        <button class="nav-link" id="models-tab" data-bs-toggle="tab" data-bs-target="#models-pane">Models</button>
+        <button class="nav-link {% if active_tab=='models' %}active{% endif %}" id="models-tab" data-bs-toggle="tab" data-bs-target="#models-pane">Models</button>
+      </li>
+      <li class="nav-item">
+        <button class="nav-link {% if active_tab=='test' %}active{% endif %}" id="test-tab" data-bs-toggle="tab" data-bs-target="#test-pane">Test Model</button>
       </li>
     </ul>
 
     <div class="tab-content" id="mainTabContent">
       <!-- Configuration -->
-      <div class="tab-pane fade show active p-4" id="config">
+      <div class="tab-pane fade {% if active_tab=='config' %}show active{% endif %} p-4" id="config">
         <form id="config-form" class="row g-3">
           <div class="col-md-6">
             <label for="dataset" class="form-label">Dataset</label>
@@ -156,6 +159,65 @@
           {% endfor %}
         {% else %}
           <p class="text-muted">No model runs found</p>
+        {% endif %}
+      </div>
+
+      <!-- Test Model -->
+      <div class="tab-pane fade {% if active_tab=='test' %}show active{% endif %} p-4" id="test-pane">
+        <form id="test-form" method="POST" action="{{ url_for('test_model') }}">
+          <div class="row g-3">
+            <div class="col-md-6">
+              <label for="model" class="form-label">Select Model</label>
+              <select class="form-select" id="model" name="model">
+                {% for run in runs %}
+                  {% if run.checkpoints %}
+                    <optgroup label="{{ run.name }}">
+                      {% for ckpt in run.checkpoints %}
+                        <option value="{{ run.name }}/{{ ckpt }}"
+                          {% if selected_model==run.name~'/'~ckpt %}selected{% endif %}>
+                          {{ ckpt }}
+                        </option>
+                      {% endfor %}
+                    </optgroup>
+                  {% endif %}
+                {% endfor %}
+              </select>
+            </div>
+            <div class="col-12">
+              <label for="prompt" class="form-label">Prompt</label>
+              <textarea class="form-control" id="prompt" name="prompt" rows="3">{{ prompt or '' }}</textarea>
+            </div>
+            <div class="col-md-3">
+              <label for="model_name" class="form-label">Model Name</label>
+              <input type="text" class="form-control" id="model_name" name="model_name" value="{{ model_name or '' }}">
+            </div>
+            <div class="col-md-3">
+              <label for="max_length" class="form-label">Max Length</label>
+              <input type="number" class="form-control" id="max_length" name="max_length" value="{{ gen_params.max_length if gen_params else 512 }}">
+            </div>
+            <div class="col-md-3">
+              <label for="temperature" class="form-label">Temperature</label>
+              <input type="text" class="form-control" id="temperature" name="temperature" value="{{ gen_params.temperature if gen_params else 0.7 }}">
+            </div>
+            <div class="col-md-3">
+              <label for="top_p" class="form-label">Top P</label>
+              <input type="text" class="form-control" id="top_p" name="top_p" value="{{ gen_params.top_p if gen_params else 0.9 }}">
+            </div>
+            <div class="col-md-3">
+              <label for="num_return_sequences" class="form-label">Num Sequences</label>
+              <input type="number" class="form-control" id="num_return_sequences" name="num_return_sequences" value="{{ gen_params.num_return_sequences if gen_params else 1 }}">
+            </div>
+            <div class="col-12">
+              <button type="submit" class="btn btn-primary">Generate</button>
+            </div>
+          </div>
+        </form>
+        {% if test_output %}
+          <hr>
+          <h5>Model Output</h5>
+          {% for out in test_output %}
+            <pre class="border p-3 bg-white">{{ out }}</pre>
+          {% endfor %}
         {% endif %}
       </div>
     </div>

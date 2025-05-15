@@ -14,7 +14,7 @@ from transformers import (
     AutoModelForCausalLM, AutoTokenizer,
     Trainer, TrainingArguments, TrainerCallback, TrainerState, TrainerControl
 )
-from peft import get_peft_model, LoraConfig, TaskType
+from peft import get_peft_model, LoraConfig, TaskType, PeftModel
 from datasets import load_dataset, Dataset
 import torch
 from multiprocessing import Process
@@ -64,7 +64,6 @@ STATUS_FILE = os.path.join("logs", "status.json")
 open(LOG_FILE, "a").close()
 open(STATUS_FILE, "a").close()
 
-
 def write_status(data):
     with open(STATUS_FILE, "w") as f:
         if isinstance(data, dict):
@@ -72,10 +71,8 @@ def write_status(data):
         else:
             json.dump({"status": data}, f)
 
-
 original_stdout = sys.stdout
 original_stderr = sys.stderr
-
 
 def write_log(msg: str):
     original_stdout.write(msg)
@@ -236,7 +233,87 @@ def index():
         config=config,
         devices=available_devices,
         datasets=datasets,
-        runs=runs
+        runs=runs,
+        active_tab="config"
+    )
+
+@app.route("/test_model", methods=["POST"])
+def test_model():
+    # Re-fetch datasets and runs for selection
+    datasets = sorted(os.listdir("datasets"))
+    runs = []
+    for run in sorted(os.listdir(BASE_OUTPUT_DIR)):
+        run_path = os.path.join(BASE_OUTPUT_DIR, run)
+        if os.path.isdir(run_path):
+            checkpoints = sorted(
+                d for d in os.listdir(run_path)
+                if os.path.isdir(os.path.join(run_path, d))
+            )
+            runs.append({"name": run, "checkpoints": checkpoints})
+    # Gather form data
+    model_selection = request.form.get("model")
+    model_name = request.form.get("model_name")
+
+    prompt = request.form.get("prompt")
+    try:
+        max_length = int(request.form.get("max_length") or 512)
+    except:
+        max_length = 512
+    try:
+        temperature = float(request.form.get("temperature") or 0.7)
+    except:
+        temperature = 0.7
+    try:
+        top_p = float(request.form.get("top_p") or 0.9)
+    except:
+        top_p = 0.9
+    try:
+        num_return_sequences = int(request.form.get("num_return_sequences") or 1)
+    except:
+        num_return_sequences = 1
+
+    # Build model path and load
+
+    model_path = model_name if model_name != "" else os.path.join(BASE_OUTPUT_DIR, model_selection)
+
+    load_kwargs = {}
+    if len(available_devices) > 1:
+        load_kwargs['device_map'] = "auto"
+    if "gemma" in model_path:
+        load_kwargs["attn_implementation"] = "eager"
+    tokenizer = AutoTokenizer.from_pretrained(model_path, **load_kwargs)
+    base_model = AutoModelForCausalLM.from_pretrained(model_path, **load_kwargs)
+    model = base_model if model_name != "" else PeftModel.from_pretrained(base_model, model_path)
+
+    # Prepare inputs and generate
+    input_text = {'role': 'user', 'content': prompt}
+    inputs = tokenizer(json.dumps(input_text), return_tensors="pt")
+    output_ids = model.generate(
+        **inputs,
+        max_length=max_length,
+        temperature=temperature,
+        top_p=top_p,
+        num_return_sequences=num_return_sequences
+    )
+    outputs = [tokenizer.decode(o, skip_special_tokens=True) for o in output_ids]
+
+    return render_template(
+        "index.html",
+        config=config,
+        devices=available_devices,
+        datasets=datasets,
+        runs=runs,
+        test_output=outputs,
+        selected_model=model_selection,
+        prompt=prompt,
+        model_name=model_name,
+        gen_params={
+            'max_length': max_length,
+            'temperature': temperature,
+            'top_p': top_p,
+            'num_return_sequences': num_return_sequences
+        },
+        active_tab="test"
     )
 
 @app.route("/upload_dataset", methods=["POST"])
