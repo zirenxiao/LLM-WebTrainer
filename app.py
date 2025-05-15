@@ -209,6 +209,8 @@ def train_model(configs: dict):
         write_log("Starting evaluation...\n")
         results = trainer.evaluate()
         write_log(f"=== Training completed: {results} ===\n")
+        model.save_pretrained(os.path.join(configs["output_dir"], "final_model"))
+        tokenizer.save_pretrained(os.path.join(configs["output_dir"], "final_model"))
         write_status("✅ Completed")
     except Exception as e:
         write_log(f"❌ ERROR: {e}\n")
