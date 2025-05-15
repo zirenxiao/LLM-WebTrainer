@@ -32,8 +32,8 @@ This Flask application provides a web-based dashboard to configure, manage, and 
 1. **Clone the repository**:
 
    ```bash
-   git clone <repo-url>
-   cd <repo-folder>
+   git clone https://github.com/zirenxiao/LLM-WebTrainer.git
+   cd LLM-WebTrainer
    ```
 2. **Create a virtual environment** (optional but recommended):
 
