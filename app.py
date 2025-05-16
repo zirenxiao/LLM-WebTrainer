@@ -1,3 +1,4 @@
+import multiprocessing
 import sys
 import os
 import json
@@ -24,7 +25,7 @@ app.secret_key = os.environ.get("SECRET_KEY", "supersecretkey")
 app.config['JSONIFY_PRETTYPRINT_REGULAR'] = True
 
 # ensure folders exist
-os.makedirs("datasets", exist_ok=True)
+os.makedirs("ds", exist_ok=True)
 os.makedirs("logs", exist_ok=True)
 BASE_OUTPUT_DIR = "result"
 os.makedirs(BASE_OUTPUT_DIR, exist_ok=True)
@@ -56,9 +57,9 @@ default_config = {
 }
 config = default_config.copy()
 
-datasets_list = sorted(os.listdir("datasets"))
-if datasets_list:
-    config["DATA_PATH"] = os.path.join("datasets", datasets_list[0])
+ds_list = sorted(os.listdir("ds"))
+if ds_list:
+    config["DATA_PATH"] = os.path.join("ds", ds_list[0])
 
 LOG_FILE = os.path.join("logs", "flask_logs.txt")
 STATUS_FILE = os.path.join("logs", "status.json")
@@ -219,7 +220,7 @@ def train_model(configs: dict):
 
 @app.route("/", methods=["GET"])
 def index():
-    datasets = sorted(os.listdir("datasets"))
+    ds = sorted(os.listdir("ds"))
     runs = []
     for run in sorted(os.listdir(BASE_OUTPUT_DIR)):
         run_path = os.path.join(BASE_OUTPUT_DIR, run)
@@ -233,7 +234,7 @@ def index():
         "index.html",
         config=config,
         devices=available_devices,
-        datasets=datasets,
+        datasets=ds,
         runs=runs,
         active_tab="config"
     )
@@ -243,7 +244,7 @@ def index():
 def test_model():
     # Re-fetch datasets and runs for selection
     try:
-        datasets = sorted(os.listdir("datasets"))
+        ds = sorted(os.listdir("ds"))
         runs = []
         for run in sorted(os.listdir(BASE_OUTPUT_DIR)):
             run_path = os.path.join(BASE_OUTPUT_DIR, run)
@@ -315,7 +316,7 @@ def upload_dataset():
     file = request.files.get("dataset_file")
     if file and file.filename:
         fname = secure_filename(file.filename)
-        file.save(os.path.join("datasets", fname))
+        file.save(os.path.join("ds", fname))
         flash(f"✅ Dataset uploaded: {fname}")
     else:
         flash("❌ No file selected for upload.")
@@ -324,7 +325,7 @@ def upload_dataset():
 @app.route("/delete_dataset", methods=["POST"])
 def delete_dataset():
     name = request.form.get("dataset_name")
-    path = os.path.join("datasets", name)
+    path = os.path.join("ds", name)
     if name and os.path.exists(path):
         os.remove(path)
         flash(f"🗑️ Dataset deleted: {name}")
@@ -348,7 +349,7 @@ def train():
                     config[k] = v
     selected = request.form.get("dataset")
     if selected:
-        config["DATA_PATH"] = os.path.join("datasets", selected)
+        config["DATA_PATH"] = os.path.join("ds", selected)
 
     run_id = time.strftime("%Y%m%d") + "-" + uuid.uuid4().hex[:6]
     run_output_dir = os.path.join(BASE_OUTPUT_DIR, run_id)
@@ -363,6 +364,7 @@ def train():
     open(LOG_FILE, "w").close()
     write_status("⏳ Queued")
 
+    multiprocessing.set_start_method('spawn', force=True)
     training_process = Process(target=train_model, args=(config,))
     training_process.start()
     return jsonify(status="🚀 Training started")
