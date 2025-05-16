@@ -208,17 +208,15 @@
               <input type="number" class="form-control" id="num_return_sequences" name="num_return_sequences" value="{{ gen_params.num_return_sequences if gen_params else 1 }}">
             </div>
             <div class="col-12">
-              <button type="submit" class="btn btn-primary">Generate</button>
+              <button type="submit" class="btn btn-primary" id="generate-btn">Generate</button>
             </div>
           </div>
         </form>
-        {% if test_output %}
+
           <hr>
           <h5>Model Output</h5>
-          {% for out in test_output %}
-            <pre class="border p-3 bg-white">{{ out }}</pre>
-          {% endfor %}
-        {% endif %}
+
+        <pre class="border p-3 bg-white" id="test_output"></pre>
       </div>
     </div>
   </div>
@@ -227,10 +225,12 @@
   <script>
     const startBtn     = document.getElementById('start-btn');
     const stopBtn      = document.getElementById('stop-btn');
+    const genBtn      = document.getElementById('generate-btn');
     const statusEl     = document.getElementById('status');
     const logsEl       = document.getElementById('logs');
     const clearLogsBtn = document.getElementById('clear-logs-btn');
     const form         = document.getElementById('config-form');
+    const testOutput   = document.getElementById('test_output');
     let   evtSource    = null;
     let   statusInterval = null;
 
@@ -291,6 +291,36 @@
       await fetch('/clear_logs', { method: 'POST' });
       logsEl.textContent = '';
     });
+
+    document.getElementById("test-form").addEventListener("submit", async function(event) {
+      genBtn.disabled = true;
+      statusEl.textContent = '🚀 Testing...';
+      event.preventDefault(); // Prevent form from submitting the traditional way
+      const formData = new FormData(this);
+
+      try {
+        const response = await fetch("{{ url_for('test_model') }}", {
+          method: "POST",
+          body: formData,
+        });
+
+        if (response.ok) {
+          const htmlContent = await response.json();
+          try{
+            testOutput.innerText = JSON.parse(htmlContent.outputs);
+          } catch (error){
+            testOutput.innerText = htmlContent.outputs;
+          }
+
+        } else {
+          console.error("Failed to generate output.");
+        }
+      } catch (error) {
+        console.error("Error during generation:", error);
+      }
+      statusEl.textContent = '✅ Completed';
+      genBtn.disabled = false;
+});
   </script>
 </body>
 </html>
